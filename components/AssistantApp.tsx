@@ -78,6 +78,9 @@ export default function AssistantApp() {
     };
   }, []);
 
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
+
   const speak = useCallback(
     (text: string) => {
       if (!supportsSpeechSynthesis) return;
@@ -138,6 +141,48 @@ export default function AssistantApp() {
 
     return null;
   }, []);
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role, text }]);
+  }, []);
+
+  const handleIntentFirst = useCallback(
+    async (query: string): Promise<string | null> => {
+      const intent = detectIntent(query);
+
+      if (intent.type === 'time') {
+        return `It is ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`;
+      }
+
+      if (intent.type === 'open_youtube') {
+        window.open('https://youtube.com', '_blank', 'noopener,noreferrer');
+        return 'Opening YouTube now.';
+      }
+
+      if (intent.type === 'search_google') {
+        const q = encodeURIComponent(intent.query);
+        window.open(`https://www.google.com/search?q=${q}`, '_blank', 'noopener,noreferrer');
+        return `Searching Google for ${intent.query}.`;
+      }
+
+      if (intent.type === 'weather') {
+        const resp = await fetch(`/api/weather?city=${encodeURIComponent(intent.city)}`);
+        const data = (await resp.json()) as {
+          error?: string;
+          city?: string;
+          country?: string;
+          current?: { temperature_2m: number; apparent_temperature: number };
+        };
+
+        if (!resp.ok || !data.current) {
+          return data.error ?? 'I could not fetch weather right now.';
+        }
+
+        return `Weather in ${data.city}, ${data.country}: ${Math.round(data.current.temperature_2m)}°C, feels like ${Math.round(data.current.apparent_temperature)}°C.`;
+      }
+
+      return null;
+    },
+    []
+  );
 
   const askAssistant = useCallback(
     async (query: string) => {
@@ -159,6 +204,7 @@ export default function AssistantApp() {
         const payload = {
           // `messagesRef` already includes the user message added above.
           messages: messagesRef.current.map((m) => ({
+          messages: [...messages, { role: 'user' as const, text }].map((m) => ({
             role: m.role,
             content: m.text
           }))
@@ -217,6 +263,7 @@ export default function AssistantApp() {
       }
     },
     [addMessage, askAssistant, speak]
+    [addMessage, handleIntentFirst, messages, speak]
   );
 
   const stopListening = useCallback(() => {
@@ -257,6 +304,18 @@ export default function AssistantApp() {
 
           if (event.results[i].isFinal) {
             processFinalTranscript(transcript);
+            if (!wakeWordArmed && transcript.toLowerCase().includes('hey assistant')) {
+              setWakeWordArmed(true);
+              const confirm = 'I am listening.';
+              addMessage('assistant', confirm);
+              speak(confirm);
+              continue;
+            }
+
+            if (wakeWordArmed) {
+              setWakeWordArmed(false);
+              void askAssistant(transcript.replace(/hey assistant/gi, '').trim());
+            }
           } else {
             interimText += `${transcript} `;
           }
@@ -297,6 +356,7 @@ export default function AssistantApp() {
       setError('Unable to start voice input. If already running, press stop and retry.');
     }
   }, [processFinalTranscript, supportsSpeechRecognition]);
+  }, [addMessage, askAssistant, speak, supportsSpeechRecognition, wakeWordArmed]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-4 px-4 py-8">
@@ -326,6 +386,7 @@ export default function AssistantApp() {
               key={msg.id}
               className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}
             >
+            <div key={msg.id} className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}>
               {msg.text}
             </div>
           ))}
