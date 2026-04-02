@@ -55,6 +55,9 @@ export default function AssistantApp() {
   const wakeWordArmedRef = useRef(false);
   const messagesRef = useRef<ChatMessage[]>([]);
 
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const shouldResumeRef = useRef(false);
+
   const supportsSpeechRecognition = useMemo(() => {
     return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
   }, []);
@@ -79,6 +82,9 @@ export default function AssistantApp() {
       recognitionRef.current?.stop();
     };
   }, []);
+
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
 
   const speak = useCallback(
     (text: string) => {
@@ -143,6 +149,48 @@ export default function AssistantApp() {
 
     return null;
   }, []);
+    setMessages((prev) => [...prev, { id: crypto.randomUUID(), role, text }]);
+  }, []);
+
+  const handleIntentFirst = useCallback(
+    async (query: string): Promise<string | null> => {
+      const intent = detectIntent(query);
+
+      if (intent.type === 'time') {
+        return `It is ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`;
+      }
+
+      if (intent.type === 'open_youtube') {
+        window.open('https://youtube.com', '_blank', 'noopener,noreferrer');
+        return 'Opening YouTube now.';
+      }
+
+      if (intent.type === 'search_google') {
+        const q = encodeURIComponent(intent.query);
+        window.open(`https://www.google.com/search?q=${q}`, '_blank', 'noopener,noreferrer');
+        return `Searching Google for ${intent.query}.`;
+      }
+
+      if (intent.type === 'weather') {
+        const resp = await fetch(`/api/weather?city=${encodeURIComponent(intent.city)}`);
+        const data = (await resp.json()) as {
+          error?: string;
+          city?: string;
+          country?: string;
+          current?: { temperature_2m: number; apparent_temperature: number };
+        };
+
+        if (!resp.ok || !data.current) {
+          return data.error ?? 'I could not fetch weather right now.';
+        }
+
+        return `Weather in ${data.city}, ${data.country}: ${Math.round(data.current.temperature_2m)}°C, feels like ${Math.round(data.current.apparent_temperature)}°C.`;
+      }
+
+      return null;
+    },
+    []
+  );
 
   const askAssistant = useCallback(
     async (query: string) => {
@@ -169,6 +217,8 @@ export default function AssistantApp() {
         const payload = {
           // Use an explicit snapshot so the current user utterance is always included.
           messages: conversationForModel.map((m) => ({
+        const payload = {
+          messages: [...messages, { role: 'user' as const, text }].map((m) => ({
             role: m.role,
             content: m.text
           }))
@@ -187,6 +237,9 @@ export default function AssistantApp() {
         speak(reply);
       } catch {
         setIsThinking(false);
+        addMessage('assistant', reply);
+        speak(reply);
+      } catch {
         const fallback = 'I hit an error while processing that request. Please try again.';
         addMessage('assistant', fallback);
         speak(fallback);
@@ -233,6 +286,7 @@ export default function AssistantApp() {
       void askAssistant(transcript);
     },
     [addMessage, askAssistant, speak]
+    [addMessage, handleIntentFirst, messages, speak]
   );
 
   const stopListening = useCallback(() => {
@@ -273,6 +327,18 @@ export default function AssistantApp() {
 
           if (event.results[i].isFinal) {
             processFinalTranscript(transcript);
+            if (!wakeWordArmed && transcript.toLowerCase().includes('hey assistant')) {
+              setWakeWordArmed(true);
+              const confirm = 'I am listening.';
+              addMessage('assistant', confirm);
+              speak(confirm);
+              continue;
+            }
+
+            if (wakeWordArmed) {
+              setWakeWordArmed(false);
+              void askAssistant(transcript.replace(/hey assistant/gi, '').trim());
+            }
           } else {
             interimText += `${transcript} `;
           }
@@ -315,6 +381,7 @@ export default function AssistantApp() {
   }, [processFinalTranscript, supportsSpeechRecognition]);
 
   const orbState = isSpeaking ? 'speaking' : isThinking ? 'thinking' : isListening ? 'listening' : 'idle';
+  }, [addMessage, askAssistant, speak, supportsSpeechRecognition, wakeWordArmed]);
 
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-4 px-4 py-8">
@@ -322,6 +389,7 @@ export default function AssistantApp() {
         <div>
           <h1 className="text-xl font-semibold">Voice Assistant</h1>
           <p className="text-sm text-slate-600 dark:text-slate-300">Tap the blue orb and speak. Say “Hey Assistant” or ask directly.</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300">Say “Hey Assistant” then speak your request.</p>
         </div>
         <button
           onClick={() => setDarkMode((v) => !v)}
@@ -344,6 +412,7 @@ export default function AssistantApp() {
               key={msg.id}
               className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}
             >
+            <div key={msg.id} className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}>
               {msg.text}
             </div>
           ))}
@@ -366,6 +435,17 @@ export default function AssistantApp() {
             </div>
           </button>
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">{orbState}</p>
+        <div className="mb-3 flex items-center justify-center">
+          <button
+            onClick={isListening ? stopListening : startListening}
+            className={`relative h-20 w-20 rounded-full text-white transition ${
+              isListening ? 'bg-red-500' : 'bg-brand-600 hover:bg-brand-500'
+            }`}
+            aria-label={isListening ? 'Stop listening' : 'Start listening'}
+          >
+            <span className="text-2xl">🎤</span>
+            {isListening && <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />}
+          </button>
         </div>
 
         <form
