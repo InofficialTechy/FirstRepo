@@ -37,6 +37,8 @@ declare global {
   }
 }
 
+const WAKE_WORD = 'hey assistant';
+
 export default function AssistantApp() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -45,6 +47,13 @@ export default function AssistantApp() {
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
   const [wakeWordArmed, setWakeWordArmed] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const shouldResumeRef = useRef(false);
+  const wakeWordArmedRef = useRef(false);
+  const messagesRef = useRef<ChatMessage[]>([]);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const shouldResumeRef = useRef(false);
@@ -56,6 +65,24 @@ export default function AssistantApp() {
   const supportsSpeechSynthesis = typeof window !== 'undefined' && 'speechSynthesis' in window;
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', darkMode);
+  }, [darkMode]);
+
+  useEffect(() => {
+    wakeWordArmedRef.current = wakeWordArmed;
+  }, [wakeWordArmed]);
+
+  useEffect(() => {
+    return () => {
+      shouldResumeRef.current = false;
+      recognitionRef.current?.stop();
+    };
+  }, []);
+
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
@@ -69,6 +96,9 @@ export default function AssistantApp() {
       utterance.voice = preferred ?? voices.find((v) => /en-US/i.test(v.lang)) ?? null;
       utterance.rate = 1;
       utterance.pitch = 1;
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     },
@@ -76,6 +106,49 @@ export default function AssistantApp() {
   );
 
   const addMessage = useCallback((role: ChatMessage['role'], text: string) => {
+    setMessages((prev) => {
+      const updated = [...prev, { id: crypto.randomUUID(), role, text }];
+      messagesRef.current = updated;
+      return updated;
+    });
+  }, []);
+
+  const handleIntentFirst = useCallback(async (query: string): Promise<string | null> => {
+    const intent = detectIntent(query);
+
+    if (intent.type === 'time') {
+      return `It is ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.`;
+    }
+
+    if (intent.type === 'open_youtube') {
+      window.open('https://youtube.com', '_blank', 'noopener,noreferrer');
+      return 'Opening YouTube now.';
+    }
+
+    if (intent.type === 'search_google') {
+      const q = encodeURIComponent(intent.query);
+      window.open(`https://www.google.com/search?q=${q}`, '_blank', 'noopener,noreferrer');
+      return `Searching Google for ${intent.query}.`;
+    }
+
+    if (intent.type === 'weather') {
+      const resp = await fetch(`/api/weather?city=${encodeURIComponent(intent.city)}`);
+      const data = (await resp.json()) as {
+        error?: string;
+        city?: string;
+        country?: string;
+        current?: { temperature_2m: number; apparent_temperature: number };
+      };
+
+      if (!resp.ok || !data.current) {
+        return data.error ?? 'I could not fetch weather right now.';
+      }
+
+      return `Weather in ${data.city}, ${data.country}: ${Math.round(data.current.temperature_2m)}°C, feels like ${Math.round(data.current.apparent_temperature)}°C.`;
+    }
+
+    return null;
+  }, []);
     setMessages((prev) => [...prev, { id: crypto.randomUUID(), role, text }]);
   }, []);
 
@@ -124,6 +197,8 @@ export default function AssistantApp() {
       const text = query.trim();
       if (!text) return;
 
+      const conversationForModel = [...messagesRef.current, { id: 'pending-user', role: 'user' as const, text }];
+
       addMessage('user', text);
       setInput('');
       setInterim('');
@@ -131,11 +206,17 @@ export default function AssistantApp() {
       try {
         const intentReply = await handleIntentFirst(text);
         if (intentReply) {
+          setIsThinking(false);
           addMessage('assistant', intentReply);
           speak(intentReply);
           return;
         }
 
+        setIsThinking(true);
+
+        const payload = {
+          // Use an explicit snapshot so the current user utterance is always included.
+          messages: conversationForModel.map((m) => ({
         const payload = {
           messages: [...messages, { role: 'user' as const, text }].map((m) => ({
             role: m.role,
@@ -151,6 +232,11 @@ export default function AssistantApp() {
 
         const data = (await resp.json()) as { text?: string };
         const reply = data.text ?? 'Sorry, I did not get a response.';
+        setIsThinking(false);
+        addMessage('assistant', reply);
+        speak(reply);
+      } catch {
+        setIsThinking(false);
         addMessage('assistant', reply);
         speak(reply);
       } catch {
@@ -159,6 +245,47 @@ export default function AssistantApp() {
         speak(fallback);
       }
     },
+    [addMessage, handleIntentFirst, speak]
+  );
+
+  const processFinalTranscript = useCallback(
+    (rawTranscript: string) => {
+      const transcript = rawTranscript.trim();
+      if (!transcript) return;
+
+      const normalized = transcript.toLowerCase();
+      const wakeIndex = normalized.indexOf(WAKE_WORD);
+
+      // If wake word is present, strip it and process the remaining command.
+      if (wakeIndex >= 0) {
+        const command = transcript.slice(wakeIndex + WAKE_WORD.length).trim();
+        wakeWordArmedRef.current = false;
+        setWakeWordArmed(false);
+
+        if (command) {
+          void askAssistant(command);
+        } else {
+          const confirm = 'I am listening.';
+          addMessage('assistant', confirm);
+          speak(confirm);
+          wakeWordArmedRef.current = true;
+          setWakeWordArmed(true);
+        }
+        return;
+      }
+
+      // If wake-word mode is armed, consume the next phrase as the command.
+      if (wakeWordArmedRef.current) {
+        wakeWordArmedRef.current = false;
+        setWakeWordArmed(false);
+        void askAssistant(transcript);
+        return;
+      }
+
+      // Interactive fallback: while mic is active, process spoken queries directly.
+      void askAssistant(transcript);
+    },
+    [addMessage, askAssistant, speak]
     [addMessage, handleIntentFirst, messages, speak]
   );
 
@@ -199,6 +326,7 @@ export default function AssistantApp() {
           if (!transcript) continue;
 
           if (event.results[i].isFinal) {
+            processFinalTranscript(transcript);
             if (!wakeWordArmed && transcript.toLowerCase().includes('hey assistant')) {
               setWakeWordArmed(true);
               const confirm = 'I am listening.';
@@ -250,6 +378,9 @@ export default function AssistantApp() {
     } catch {
       setError('Unable to start voice input. If already running, press stop and retry.');
     }
+  }, [processFinalTranscript, supportsSpeechRecognition]);
+
+  const orbState = isSpeaking ? 'speaking' : isThinking ? 'thinking' : isListening ? 'listening' : 'idle';
   }, [addMessage, askAssistant, speak, supportsSpeechRecognition, wakeWordArmed]);
 
   return (
@@ -257,6 +388,7 @@ export default function AssistantApp() {
       <header className="flex items-center justify-between rounded-2xl border border-slate-300 bg-white/80 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
         <div>
           <h1 className="text-xl font-semibold">Voice Assistant</h1>
+          <p className="text-sm text-slate-600 dark:text-slate-300">Tap the blue orb and speak. Say “Hey Assistant” or ask directly.</p>
           <p className="text-sm text-slate-600 dark:text-slate-300">Say “Hey Assistant” then speak your request.</p>
         </div>
         <button
@@ -276,6 +408,10 @@ export default function AssistantApp() {
           )}
 
           {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}
+            >
             <div key={msg.id} className={`max-w-[90%] rounded-xl p-3 text-sm ${msg.role === 'user' ? 'ml-auto bg-brand-500 text-white' : 'bg-slate-200 dark:bg-slate-800'}`}>
               {msg.text}
             </div>
@@ -286,6 +422,19 @@ export default function AssistantApp() {
 
         {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
 
+        <div className="mb-3 flex flex-col items-center justify-center gap-3">
+          <button
+            onClick={isListening ? stopListening : startListening}
+            className="group relative"
+            aria-label={isListening ? 'Stop listening' : 'Start listening'}
+          >
+            <div className={`orb orb-${orbState}`}>
+              <div className="orb-layer orb-layer-1" />
+              <div className="orb-layer orb-layer-2" />
+              <div className="orb-core" />
+            </div>
+          </button>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">{orbState}</p>
         <div className="mb-3 flex items-center justify-center">
           <button
             onClick={isListening ? stopListening : startListening}
