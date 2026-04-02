@@ -157,7 +157,8 @@ export default function AssistantApp() {
         }
 
         const payload = {
-          messages: [...messagesRef.current, { role: 'user' as const, text }].map((m) => ({
+          // `messagesRef` already includes the user message added above.
+          messages: messagesRef.current.map((m) => ({
             role: m.role,
             content: m.text
           }))
