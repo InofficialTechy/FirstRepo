@@ -13,3 +13,66 @@
 body {
   @apply bg-slate-100 text-slate-900 antialiased dark:bg-slate-950 dark:text-slate-100;
 }
+
+.orb {
+  position: relative;
+  width: 9rem;
+  height: 9rem;
+  border-radius: 9999px;
+  transform-style: preserve-3d;
+  display: grid;
+  place-items: center;
+  transition: transform 220ms ease;
+}
+
+.orb-layer,
+.orb-core {
+  position: absolute;
+  border-radius: 9999px;
+}
+
+.orb-layer-1 {
+  inset: 0;
+  background: radial-gradient(circle at 35% 30%, #8bc9ff 0%, #2f74ff 45%, #1434b8 100%);
+  box-shadow: 0 0 45px rgba(44, 116, 255, 0.55), inset -14px -10px 30px rgba(8, 20, 80, 0.7);
+  animation: orbFloat 5s ease-in-out infinite;
+}
+
+.orb-layer-2 {
+  inset: 8%;
+  background: conic-gradient(from 45deg, rgba(191, 229, 255, 0.75), rgba(53, 127, 255, 0.3), rgba(191, 229, 255, 0.75));
+  filter: blur(1px);
+  mix-blend-mode: screen;
+  animation: orbRotate 6s linear infinite;
+}
+
+.orb-core {
+  inset: 26%;
+  background: radial-gradient(circle, rgba(224, 245, 255, 0.95), rgba(110, 178, 255, 0.45));
+  animation: orbPulse 2.8s ease-in-out infinite;
+}
+
+.orb-idle .orb-layer-1 { animation-duration: 6s; }
+.orb-listening { transform: scale(1.05); }
+.orb-listening .orb-layer-1 { animation-duration: 2.1s; }
+.orb-listening .orb-core { animation-duration: 1s; }
+.orb-thinking { transform: scale(1.08) rotateX(12deg); }
+.orb-thinking .orb-layer-2 { animation-duration: 1.2s; }
+.orb-speaking { transform: scale(1.1); }
+.orb-speaking .orb-layer-1 { animation-duration: 1.4s; }
+.orb-speaking .orb-core { animation-duration: 0.7s; }
+
+@keyframes orbFloat {
+  0%, 100% { transform: rotateX(18deg) rotateY(0deg) scale(1); border-radius: 45% 55% 50% 50% / 45% 50% 50% 55%; }
+  50% { transform: rotateX(20deg) rotateY(180deg) scale(1.04); border-radius: 55% 45% 52% 48% / 50% 45% 55% 50%; }
+}
+
+@keyframes orbRotate {
+  from { transform: rotate(0deg) scale(1); }
+  to { transform: rotate(360deg) scale(1.02); }
+}
+
+@keyframes orbPulse {
+  0%, 100% { transform: scale(0.88); opacity: 0.72; }
+  50% { transform: scale(1.15); opacity: 1; }
+}

@@ -47,6 +47,8 @@ export default function AssistantApp() {
   const [error, setError] = useState<string | null>(null);
   const [darkMode, setDarkMode] = useState(true);
   const [wakeWordArmed, setWakeWordArmed] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const shouldResumeRef = useRef(false);
@@ -88,6 +90,9 @@ export default function AssistantApp() {
       utterance.voice = preferred ?? voices.find((v) => /en-US/i.test(v.lang)) ?? null;
       utterance.rate = 1;
       utterance.pitch = 1;
+      utterance.onstart = () => setIsSpeaking(true);
+      utterance.onend = () => setIsSpeaking(false);
+      utterance.onerror = () => setIsSpeaking(false);
       window.speechSynthesis.cancel();
       window.speechSynthesis.speak(utterance);
     },
@@ -153,10 +158,13 @@ export default function AssistantApp() {
       try {
         const intentReply = await handleIntentFirst(text);
         if (intentReply) {
+          setIsThinking(false);
           addMessage('assistant', intentReply);
           speak(intentReply);
           return;
         }
+
+        setIsThinking(true);
 
         const payload = {
           // Use an explicit snapshot so the current user utterance is always included.
@@ -174,9 +182,11 @@ export default function AssistantApp() {
 
         const data = (await resp.json()) as { text?: string };
         const reply = data.text ?? 'Sorry, I did not get a response.';
+        setIsThinking(false);
         addMessage('assistant', reply);
         speak(reply);
       } catch {
+        setIsThinking(false);
         const fallback = 'I hit an error while processing that request. Please try again.';
         addMessage('assistant', fallback);
         speak(fallback);
@@ -304,12 +314,14 @@ export default function AssistantApp() {
     }
   }, [processFinalTranscript, supportsSpeechRecognition]);
 
+  const orbState = isSpeaking ? 'speaking' : isThinking ? 'thinking' : isListening ? 'listening' : 'idle';
+
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-4 px-4 py-8">
       <header className="flex items-center justify-between rounded-2xl border border-slate-300 bg-white/80 p-4 shadow-sm dark:border-slate-700 dark:bg-slate-900/80">
         <div>
           <h1 className="text-xl font-semibold">Voice Assistant</h1>
-          <p className="text-sm text-slate-600 dark:text-slate-300">Say “Hey Assistant” then speak your request.</p>
+          <p className="text-sm text-slate-600 dark:text-slate-300">Tap the blue orb and speak. Say “Hey Assistant” or ask directly.</p>
         </div>
         <button
           onClick={() => setDarkMode((v) => !v)}
@@ -341,17 +353,19 @@ export default function AssistantApp() {
 
         {error && <p className="mb-3 text-sm text-red-500">{error}</p>}
 
-        <div className="mb-3 flex items-center justify-center">
+        <div className="mb-3 flex flex-col items-center justify-center gap-3">
           <button
             onClick={isListening ? stopListening : startListening}
-            className={`relative h-20 w-20 rounded-full text-white transition ${
-              isListening ? 'bg-red-500' : 'bg-brand-600 hover:bg-brand-500'
-            }`}
+            className="group relative"
             aria-label={isListening ? 'Stop listening' : 'Start listening'}
           >
-            <span className="text-2xl">🎤</span>
-            {isListening && <span className="absolute inset-0 animate-ping rounded-full bg-red-400 opacity-50" />}
+            <div className={`orb orb-${orbState}`}>
+              <div className="orb-layer orb-layer-1" />
+              <div className="orb-layer orb-layer-2" />
+              <div className="orb-core" />
+            </div>
           </button>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500 dark:text-slate-400">{orbState}</p>
         </div>
 
         <form
